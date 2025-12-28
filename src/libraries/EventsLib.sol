@@ -25,6 +25,10 @@ library EventsLib {
     /// @param irm The IRM that was enabled.
     event EnableIrm(address indexed irm);
 
+    /// @notice Emitted when enabling a swap rate model.
+    /// @param swapRateModel The swap rate model that was enabled.
+    event EnableSwapRateModel(address indexed swapRateModel);
+
     /// @notice Emitted when enabling an LLTV.
     /// @param lltv The LLTV that was enabled.
     event EnableLltv(uint256 lltv);
@@ -39,85 +43,27 @@ library EventsLib {
     /// @param id The market id.
     /// @param caller The caller.
     /// @param onBehalf The owner of the modified position.
-    /// @param assets The amount of assets supplied.
+    /// @param assetsA The amount of assetA supplied.
+    /// @param assetsB The amount of assetB supplied.
     /// @param shares The amount of shares minted.
-    event Supply(Id indexed id, address indexed caller, address indexed onBehalf, uint256 assets, uint256 shares);
+    event Supply(Id indexed id, address indexed caller, address indexed onBehalf, uint256 assetsA, uint256 assetsB, uint256 shares);
 
     /// @notice Emitted on withdrawal of assets.
     /// @param id The market id.
     /// @param caller The caller.
     /// @param onBehalf The owner of the modified position.
     /// @param receiver The address that received the withdrawn assets.
-    /// @param assets The amount of assets withdrawn.
+    /// @param assetsA The amount of assetA withdrawn.
+    /// @param assetsB The amount of assetB withdrawn.
     /// @param shares The amount of shares burned.
     event Withdraw(
         Id indexed id,
         address caller,
         address indexed onBehalf,
         address indexed receiver,
-        uint256 assets,
+        uint256 assetsA,
+        uint256 assetsB,
         uint256 shares
-    );
-
-    /// @notice Emitted on borrow of assets.
-    /// @param id The market id.
-    /// @param caller The caller.
-    /// @param onBehalf The owner of the modified position.
-    /// @param receiver The address that received the borrowed assets.
-    /// @param assets The amount of assets borrowed.
-    /// @param shares The amount of shares minted.
-    event Borrow(
-        Id indexed id,
-        address caller,
-        address indexed onBehalf,
-        address indexed receiver,
-        uint256 assets,
-        uint256 shares
-    );
-
-    /// @notice Emitted on repayment of assets.
-    /// @param id The market id.
-    /// @param caller The caller.
-    /// @param onBehalf The owner of the modified position.
-    /// @param assets The amount of assets repaid. May be 1 over the corresponding market's `totalBorrowAssets`.
-    /// @param shares The amount of shares burned.
-    event Repay(Id indexed id, address indexed caller, address indexed onBehalf, uint256 assets, uint256 shares);
-
-    /// @notice Emitted on supply of collateral.
-    /// @param id The market id.
-    /// @param caller The caller.
-    /// @param onBehalf The owner of the modified position.
-    /// @param assets The amount of collateral supplied.
-    event SupplyCollateral(Id indexed id, address indexed caller, address indexed onBehalf, uint256 assets);
-
-    /// @notice Emitted on withdrawal of collateral.
-    /// @param id The market id.
-    /// @param caller The caller.
-    /// @param onBehalf The owner of the modified position.
-    /// @param receiver The address that received the withdrawn collateral.
-    /// @param assets The amount of collateral withdrawn.
-    event WithdrawCollateral(
-        Id indexed id, address caller, address indexed onBehalf, address indexed receiver, uint256 assets
-    );
-
-    /// @notice Emitted on liquidation of a position.
-    /// @param id The market id.
-    /// @param caller The caller.
-    /// @param borrower The borrower of the position.
-    /// @param repaidAssets The amount of assets repaid. May be 1 over the corresponding market's `totalBorrowAssets`.
-    /// @param repaidShares The amount of shares burned.
-    /// @param seizedAssets The amount of collateral seized.
-    /// @param badDebtAssets The amount of assets of bad debt realized.
-    /// @param badDebtShares The amount of borrow shares of bad debt realized.
-    event Liquidate(
-        Id indexed id,
-        address indexed caller,
-        address indexed borrower,
-        uint256 repaidAssets,
-        uint256 repaidShares,
-        uint256 seizedAssets,
-        uint256 badDebtAssets,
-        uint256 badDebtShares
     );
 
     /// @notice Emitted on flash loan.
@@ -141,10 +87,26 @@ library EventsLib {
     /// @param usedNonce The nonce that was used.
     event IncrementNonce(address indexed caller, address indexed authorizer, uint256 usedNonce);
 
-    /// @notice Emitted when accruing interest.
+    /// @notice Emitted on an exact swap in operation.
     /// @param id The market id.
-    /// @param prevBorrowRate The previous borrow rate.
-    /// @param interest The amount of interest accrued.
-    /// @param feeShares The amount of shares minted as fee.
-    event AccrueInterest(Id indexed id, uint256 prevBorrowRate, uint256 interest, uint256 feeShares);
+    /// @param caller The caller.
+    /// @param receiver The receiver of the output asset.
+    /// @param amountIn The amount of assetA swapped in.
+    /// @param amountOut The amount of assetB received.
+    event ExactSwapIn(Id indexed id, address indexed caller, address indexed receiver, uint256 amountIn, uint256 amountOut);
+
+    /// @notice Emitted on an exact swap out operation.
+    /// @param id The market id.
+    /// @param caller The caller.
+    /// @param receiver The receiver of the output asset.
+    /// @param amountIn The amount of assetB swapped in.
+    /// @param amountOut The amount of assetA received.
+    event ExactSwapOut(Id indexed id, address indexed caller, address indexed receiver, uint256 amountIn, uint256 amountOut);
+
+    /// @notice Emitted when a swap would result in unhealthy liquidity ratio.
+    /// @param id The market id.
+    /// @param totalSupplyAssetsA The total supply of assetA after the failed swap.
+    /// @param totalSupplyAssetsB The total supply of assetB after the failed swap.
+    /// @param price The market price.
+    event LiquidityUnhealthy(Id indexed id, uint256 totalSupplyAssetsA, uint256 totalSupplyAssetsB, uint256 price);
 }

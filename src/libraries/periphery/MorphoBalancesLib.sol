@@ -41,23 +41,35 @@ library MorphoBalancesLib {
         uint256 elapsed = block.timestamp - market.lastUpdate;
 
         // Skipped if elapsed == 0 or totalBorrowAssets == 0 because interest would be null, or if irm == address(0).
-        if (elapsed != 0 && market.totalBorrowAssets != 0 && marketParams.irm != address(0)) {
+        if (elapsed != 0 && (market.totalBorrowAssetsA != 0 || market.totalBorrowAssetsB != 0) && marketParams.irm != address(0)) {
             uint256 borrowRate = IIrm(marketParams.irm).borrowRateView(marketParams, market);
-            uint256 interest = market.totalBorrowAssets.wMulDown(borrowRate.wTaylorCompounded(elapsed));
-            market.totalBorrowAssets += interest.toUint128();
-            market.totalSupplyAssets += interest.toUint128();
+            
+            // Accrue interest for assetA
+            uint256 interestA = market.totalBorrowAssetsA.wMulDown(borrowRate.wTaylorCompounded(elapsed));
+            market.totalBorrowAssetsA += interestA.toUint128();
+            market.totalSupplyAssetsA += interestA.toUint128();
+
+            // Accrue interest for assetB
+            uint256 interestB = market.totalBorrowAssetsB.wMulDown(borrowRate.wTaylorCompounded(elapsed));
+            market.totalBorrowAssetsB += interestB.toUint128();
+            market.totalSupplyAssetsB += interestB.toUint128();
 
             if (market.fee != 0) {
-                uint256 feeAmount = interest.wMulDown(market.fee);
+                // Calculate combined fee amount from both assets
+                uint256 feeAmountA = interestA.wMulDown(market.fee);
+                uint256 feeAmountB = interestB.wMulDown(market.fee);
+                uint256 totalFeeAmount = feeAmountA + feeAmountB;
+                
                 // The fee amount is subtracted from the total supply in this calculation to compensate for the fact
                 // that total supply is already updated.
+                uint256 totalSupplyAssets = market.totalSupplyAssetsA + market.totalSupplyAssetsB;
                 uint256 feeShares =
-                    feeAmount.toSharesDown(market.totalSupplyAssets - feeAmount, market.totalSupplyShares);
+                    totalFeeAmount.toSharesDown(totalSupplyAssets - totalFeeAmount, market.totalSupplyShares);
                 market.totalSupplyShares += feeShares.toUint128();
             }
         }
 
-        return (market.totalSupplyAssets, market.totalSupplyShares, market.totalBorrowAssets, market.totalBorrowShares);
+        return (market.totalSupplyAssetsA, market.totalSupplyShares, market.totalBorrowAssetsA, market.totalBorrowShares);
     }
 
     /// @notice Returns the expected total supply assets of a market after having accrued interest.

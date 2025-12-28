@@ -4,19 +4,16 @@ pragma solidity >=0.5.0;
 type Id is bytes32;
 
 struct MarketParams {
-    address loanToken;
-    address collateralToken;
-    address oracle;
-    address irm;
-    uint256 lltv;
+    address assetA;
+    address assetB;
+    address swapRateModel;
+    uint256 price;
 }
 
 /// @dev Warning: For `feeRecipient`, `supplyShares` does not contain the accrued shares since the last interest
 /// accrual.
 struct Position {
     uint256 supplyShares;
-    uint128 borrowShares;
-    uint128 collateral;
 }
 
 /// @dev Warning: `totalSupplyAssets` does not contain the accrued interest since the last interest accrual.
@@ -24,9 +21,11 @@ struct Position {
 /// @dev Warning: `totalSupplyShares` does not contain the additional shares accrued by `feeRecipient` since the last
 /// interest accrual.
 struct Market {
-    uint128 totalSupplyAssets;
+    uint128 totalSupplyAssetsA;
+    uint128 totalSupplyAssetsB;
     uint128 totalSupplyShares;
-    uint128 totalBorrowAssets;
+    uint128 totalBorrowAssetsA;
+    uint128 totalBorrowAssetsB;
     uint128 totalBorrowShares;
     uint128 lastUpdate;
     uint128 fee;
@@ -67,12 +66,21 @@ interface IMorphoBase {
     /// @notice Whether the `irm` is enabled.
     function isIrmEnabled(address irm) external view returns (bool);
 
+    /// @notice Whether the `swapRateModel` is enabled.
+    function isSwapRateModelEnabled(address swapRateModel) external view returns (bool);
+
     /// @notice Whether the `lltv` is enabled.
     function isLltvEnabled(uint256 lltv) external view returns (bool);
 
     /// @notice Whether `authorized` is authorized to modify `authorizer`'s position on all markets.
     /// @dev Anyone is authorized to modify their own positions, regardless of this variable.
     function isAuthorized(address authorizer, address authorized) external view returns (bool);
+
+    /// @notice Returns whether the liquidity ratio in the given market is healthy.
+    /// @dev Checks if (totalSupplyAssetsB * price) / totalSupplyAssetsA is within [0.5, 2] range.
+    /// @param marketParams The market to check.
+    /// @return True if the liquidity ratio is healthy, false otherwise.
+    function isLiqHealthy(MarketParams memory marketParams) external view returns (bool);
 
     /// @notice The `authorizer`'s current nonce. Used to prevent replay attacks with EIP-712 signatures.
     function nonce(address authorizer) external view returns (uint256);
@@ -120,147 +128,93 @@ interface IMorphoBase {
     /// - The token should not revert on `transfer` and `transferFrom` if balances and approvals are right.
     /// - The amount of assets supplied and borrowed should not be too high (max ~1e32), otherwise the number of shares
     /// might not fit within 128 bits.
-    /// - The IRM should not revert on `borrowRate`.
-    /// - The IRM should not return a very high borrow rate (otherwise the computation of `interest` in
-    /// `_accrueInterest` can overflow).
     /// - The oracle should not revert `price`.
-    /// - The oracle should not return a very high price (otherwise the computation of `maxBorrow` in `_isHealthy` or of
-    /// `assetsRepaid` in `liquidate` can overflow).
+    /// - The oracle should not return a very high price (otherwise the computation of `maxBorrow` in `liquidity health checks` can overflow).
     /// @dev The borrow share price of a market with less than 1e4 assets borrowed can be decreased by manipulations, to
     /// the point where `totalBorrowShares` is very large and borrowing overflows.
     function createMarket(MarketParams memory marketParams) external;
 
-    /// @notice Supplies `assets` or `shares` on behalf of `onBehalf`, optionally calling back the caller's
+    /// @notice Supplies `assetsA/assetsB` or `shares` on behalf of `onBehalf`, optionally calling back the caller's
     /// `onMorphoSupply` function with the given `data`.
-    /// @dev Either `assets` or `shares` should be zero. Most use cases should rely on `assets` as an input so the
+    /// @dev Either `assetsA+assetsB` or `shares` should be zero.
+    /// Most use cases should rely on `assets` as an input so the
     /// caller is guaranteed to have `assets` tokens pulled from their balance, but the possibility to mint a specific
     /// amount of shares is given for full compatibility and precision.
     /// @dev Supplying a large amount can revert for overflow.
     /// @dev Supplying an amount of shares may lead to supply more or fewer assets than expected due to slippage.
     /// Consider using the `assets` parameter to avoid this.
     /// @param marketParams The market to supply assets to.
-    /// @param assets The amount of assets to supply.
+    /// @param assetsA The amount of assetA to supply.
+    /// @param assetsB The amount of assetB to supply.
     /// @param shares The amount of shares to mint.
     /// @param onBehalf The address that will own the increased supply position.
     /// @param data Arbitrary data to pass to the `onMorphoSupply` callback. Pass empty data if not needed.
-    /// @return assetsSupplied The amount of assets supplied.
+    /// @return assetsSuppliedA The amount of assetA supplied.
+    /// @return assetsSuppliedB The amount of assetB supplied.
     /// @return sharesSupplied The amount of shares minted.
     function supply(
         MarketParams memory marketParams,
-        uint256 assets,
+        uint256 assetsA,
+        uint256 assetsB,
         uint256 shares,
         address onBehalf,
         bytes memory data
-    ) external returns (uint256 assetsSupplied, uint256 sharesSupplied);
+    ) external returns (uint256 assetsSuppliedA, uint256 assetsSuppliedB, uint256 sharesSupplied);
 
-    /// @notice Withdraws `assets` or `shares` on behalf of `onBehalf` and sends the assets to `receiver`.
-    /// @dev Either `assets` or `shares` should be zero. To withdraw max, pass the `shares`'s balance of `onBehalf`.
+    /// @notice Withdraws `assetsA/assetsB` or `shares` on behalf of `onBehalf` and sends the assets to `receiver`.
+    /// @dev Either `assetsA+assetsB` or `shares` should be zero.
+    /// To withdraw max, pass the `shares`'s balance of `onBehalf`.
     /// @dev `msg.sender` must be authorized to manage `onBehalf`'s positions.
     /// @dev Withdrawing an amount corresponding to more shares than supplied will revert for underflow.
     /// @dev It is advised to use the `shares` input when withdrawing the full position to avoid reverts due to
     /// conversion roundings between shares and assets.
     /// @param marketParams The market to withdraw assets from.
-    /// @param assets The amount of assets to withdraw.
+    /// @param assetsA The amount of assetA to withdraw.
+    /// @param assetsB The amount of assetB to withdraw.
     /// @param shares The amount of shares to burn.
     /// @param onBehalf The address of the owner of the supply position.
     /// @param receiver The address that will receive the withdrawn assets.
-    /// @return assetsWithdrawn The amount of assets withdrawn.
+    /// @return assetsWithdrawnA The amount of assetA withdrawn.
+    /// @return assetsWithdrawnB The amount of assetB withdrawn.
     /// @return sharesWithdrawn The amount of shares burned.
     function withdraw(
         MarketParams memory marketParams,
-        uint256 assets,
+        uint256 assetsA,
+        uint256 assetsB,
         uint256 shares,
         address onBehalf,
         address receiver
-    ) external returns (uint256 assetsWithdrawn, uint256 sharesWithdrawn);
+    ) external returns (uint256 assetsWithdrawnA, uint256 assetsWithdrawnB, uint256 sharesWithdrawn);
 
-    /// @notice Borrows `assets` or `shares` on behalf of `onBehalf` and sends the assets to `receiver`.
-    /// @dev Either `assets` or `shares` should be zero. Most use cases should rely on `assets` as an input so the
-    /// caller is guaranteed to borrow `assets` of tokens, but the possibility to mint a specific amount of shares is
-    /// given for full compatibility and precision.
-    /// @dev `msg.sender` must be authorized to manage `onBehalf`'s positions.
-    /// @dev Borrowing a large amount can revert for overflow.
-    /// @dev Borrowing an amount of shares may lead to borrow fewer assets than expected due to slippage.
-    /// Consider using the `assets` parameter to avoid this.
-    /// @param marketParams The market to borrow assets from.
-    /// @param assets The amount of assets to borrow.
-    /// @param shares The amount of shares to mint.
-    /// @param onBehalf The address that will own the increased borrow position.
-    /// @param receiver The address that will receive the borrowed assets.
-    /// @return assetsBorrowed The amount of assets borrowed.
-    /// @return sharesBorrowed The amount of shares minted.
-    function borrow(
+    /* SWAP FUNCTIONS */
+
+    /// @notice Swaps an exact amount of assetA for assetB.
+    /// @dev The swap rate is determined by the market's swap rate model.
+    /// @param marketParams The market to swap assets in.
+    /// @param amountIn The exact amount of assetA to swap.
+    /// @param minAmountOut The minimum amount of assetB to receive (slippage protection).
+    /// @param receiver The address that will receive the swapped assetB.
+    /// @return amountOut The amount of assetB received.
+    function exactSwapIn(
         MarketParams memory marketParams,
-        uint256 assets,
-        uint256 shares,
-        address onBehalf,
+        uint256 amountIn,
+        uint256 minAmountOut,
         address receiver
-    ) external returns (uint256 assetsBorrowed, uint256 sharesBorrowed);
+    ) external returns (uint256 amountOut);
 
-    /// @notice Repays `assets` or `shares` on behalf of `onBehalf`, optionally calling back the caller's
-    /// `onMorphoRepay` function with the given `data`.
-    /// @dev Either `assets` or `shares` should be zero. To repay max, pass the `shares`'s balance of `onBehalf`.
-    /// @dev Repaying an amount corresponding to more shares than borrowed will revert for underflow.
-    /// @dev It is advised to use the `shares` input when repaying the full position to avoid reverts due to conversion
-    /// roundings between shares and assets.
-    /// @dev An attacker can front-run a repay with a small repay making the transaction revert for underflow.
-    /// @param marketParams The market to repay assets to.
-    /// @param assets The amount of assets to repay.
-    /// @param shares The amount of shares to burn.
-    /// @param onBehalf The address of the owner of the debt position.
-    /// @param data Arbitrary data to pass to the `onMorphoRepay` callback. Pass empty data if not needed.
-    /// @return assetsRepaid The amount of assets repaid.
-    /// @return sharesRepaid The amount of shares burned.
-    function repay(
+    /// @notice Swaps assetB for an exact amount of assetA.
+    /// @dev The swap rate is determined by the market's swap rate model.
+    /// @param marketParams The market to swap assets in.
+    /// @param amountOut The exact amount of assetA to receive.
+    /// @param maxAmountIn The maximum amount of assetB to spend (slippage protection).
+    /// @param receiver The address that will receive the swapped assetA.
+    /// @return amountIn The amount of assetB spent.
+    function exactSwapOut(
         MarketParams memory marketParams,
-        uint256 assets,
-        uint256 shares,
-        address onBehalf,
-        bytes memory data
-    ) external returns (uint256 assetsRepaid, uint256 sharesRepaid);
-
-    /// @notice Supplies `assets` of collateral on behalf of `onBehalf`, optionally calling back the caller's
-    /// `onMorphoSupplyCollateral` function with the given `data`.
-    /// @dev Interest are not accrued since it's not required and it saves gas.
-    /// @dev Supplying a large amount can revert for overflow.
-    /// @param marketParams The market to supply collateral to.
-    /// @param assets The amount of collateral to supply.
-    /// @param onBehalf The address that will own the increased collateral position.
-    /// @param data Arbitrary data to pass to the `onMorphoSupplyCollateral` callback. Pass empty data if not needed.
-    function supplyCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, bytes memory data)
-        external;
-
-    /// @notice Withdraws `assets` of collateral on behalf of `onBehalf` and sends the assets to `receiver`.
-    /// @dev `msg.sender` must be authorized to manage `onBehalf`'s positions.
-    /// @dev Withdrawing an amount corresponding to more collateral than supplied will revert for underflow.
-    /// @param marketParams The market to withdraw collateral from.
-    /// @param assets The amount of collateral to withdraw.
-    /// @param onBehalf The address of the owner of the collateral position.
-    /// @param receiver The address that will receive the collateral assets.
-    function withdrawCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, address receiver)
-        external;
-
-    /// @notice Liquidates the given `repaidShares` of debt asset or seize the given `seizedAssets` of collateral on the
-    /// given market `marketParams` of the given `borrower`'s position, optionally calling back the caller's
-    /// `onMorphoLiquidate` function with the given `data`.
-    /// @dev Either `seizedAssets` or `repaidShares` should be zero.
-    /// @dev Seizing more than the collateral balance will underflow and revert without any error message.
-    /// @dev Repaying more than the borrow balance will underflow and revert without any error message.
-    /// @dev An attacker can front-run a liquidation with a small repay making the transaction revert for underflow.
-    /// @param marketParams The market of the position.
-    /// @param borrower The owner of the position.
-    /// @param seizedAssets The amount of collateral to seize.
-    /// @param repaidShares The amount of shares to repay.
-    /// @param data Arbitrary data to pass to the `onMorphoLiquidate` callback. Pass empty data if not needed.
-    /// @return The amount of assets seized.
-    /// @return The amount of assets repaid.
-    function liquidate(
-        MarketParams memory marketParams,
-        address borrower,
-        uint256 seizedAssets,
-        uint256 repaidShares,
-        bytes memory data
-    ) external returns (uint256, uint256);
+        uint256 amountOut,
+        uint256 maxAmountIn,
+        address receiver
+    ) external returns (uint256 amountIn);
 
     /// @notice Executes a flash loan.
     /// @dev Flash loans have access to the whole balance of the contract (the liquidity and deposited collateral of all
@@ -287,9 +241,6 @@ interface IMorphoBase {
     /// @param signature The signature.
     function setAuthorizationWithSig(Authorization calldata authorization, Signature calldata signature) external;
 
-    /// @notice Accrues interest for the given market `marketParams`.
-    function accrueInterest(MarketParams memory marketParams) external;
-
     /// @notice Returns the data stored on the different `slots`.
     function extSloads(bytes32[] memory slots) external view returns (bytes32[] memory);
 }
@@ -314,9 +265,11 @@ interface IMorphoStaticTyping is IMorphoBase {
         external
         view
         returns (
-            uint128 totalSupplyAssets,
+            uint128 totalSupplyAssetsA,
+            uint128 totalSupplyAssetsB,
             uint128 totalSupplyShares,
-            uint128 totalBorrowAssets,
+            uint128 totalBorrowAssetsA,
+            uint128 totalBorrowAssetsB,
             uint128 totalBorrowShares,
             uint128 lastUpdate,
             uint128 fee
@@ -328,7 +281,7 @@ interface IMorphoStaticTyping is IMorphoBase {
     function idToMarketParams(Id id)
         external
         view
-        returns (address loanToken, address collateralToken, address oracle, address irm, uint256 lltv);
+        returns (address assetA, address assetB, address collateralToken, address oracle, address irm, address swapRateModel, uint256 lltv, uint256 price);
 }
 
 /// @title IMorpho

@@ -8,11 +8,15 @@ import {MathLib} from "../libraries/MathLib.sol";
 
 contract IrmMock is IIrm {
     using MathLib for uint128;
+    using MathLib for uint256;
 
     function borrowRateView(MarketParams memory, Market memory market) public pure returns (uint256) {
-        if (market.totalSupplyAssets == 0) return 0;
+        uint256 totalSupplyAssets = market.totalSupplyAssetsA + market.totalSupplyAssetsB;
+        uint256 totalBorrowAssets = market.totalBorrowAssetsA + market.totalBorrowAssetsB;
+        
+        if (totalSupplyAssets == 0) return 0;
 
-        uint256 utilization = market.totalBorrowAssets.wDivDown(market.totalSupplyAssets);
+        uint256 utilization = totalBorrowAssets.wDivDown(totalSupplyAssets);
 
         // Divide by the number of seconds in a year.
         // This is a very simple model where x% utilization corresponds to x% APR.
