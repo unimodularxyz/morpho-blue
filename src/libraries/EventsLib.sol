@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.28;
 
 import {Id, MarketParams} from "../interfaces/IMorpho.sol";
 
@@ -21,17 +21,9 @@ library EventsLib {
     /// @param newFeeRecipient The new fee recipient.
     event SetFeeRecipient(address indexed newFeeRecipient);
 
-    /// @notice Emitted when enabling an IRM.
-    /// @param irm The IRM that was enabled.
-    event EnableIrm(address indexed irm);
-
     /// @notice Emitted when enabling a swap rate model.
     /// @param swapRateModel The swap rate model that was enabled.
     event EnableSwapRateModel(address indexed swapRateModel);
-
-    /// @notice Emitted when enabling an LLTV.
-    /// @param lltv The LLTV that was enabled.
-    event EnableLltv(uint256 lltv);
 
     /// @notice Emitted when creating a market.
     /// @param id The market id.

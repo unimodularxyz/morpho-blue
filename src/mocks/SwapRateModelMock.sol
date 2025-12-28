@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity 0.8.19;
+pragma solidity 0.8.28;
 
 import {ISwapRateModel} from "../interfaces/ISwapRateModel.sol";
 import {MarketParams, Market} from "../interfaces/IMorpho.sol";
@@ -98,5 +98,30 @@ contract SwapRateModelMock is ISwapRateModel {
 
         // Return as rate: amountIn / amountOut (scaled by WAD)
         return amountIn.wDivUp(amountOut);
+    }
+
+    /// @inheritdoc ISwapRateModel
+    function isHealthy(MarketParams memory marketParams, Market memory market) external view returns (bool) {
+        uint256 totalSupplyAssetsA = market.totalSupplyAssetsA;
+        uint256 totalSupplyAssetsB = market.totalSupplyAssetsB;
+        
+        // If either reserve is zero, consider unhealthy
+        if (totalSupplyAssetsA == 0 || totalSupplyAssetsB == 0) return false;
+        
+        // Calculate assetB * price (in WAD)
+        uint256 assetBValue = totalSupplyAssetsB.wMulDown(marketParams.price);
+        
+        // Check if 0.5 <= (assetB * price) / assetA <= 2
+        // Equivalent to: 0.5 * assetA <= assetB * price <= 2 * assetA
+        uint256 halfAssetA = totalSupplyAssetsA.wMulDown(WAD / 2); // 0.5 * WAD
+        uint256 doubleAssetA = totalSupplyAssetsA.wMulDown(2 * WAD); // 2 * WAD
+        
+        return assetBValue >= halfAssetA && assetBValue <= doubleAssetA;
+    }
+
+    /// @inheritdoc ISwapRateModel
+    function updatePrice(MarketParams memory, Market memory, uint256, uint256, bool) external {
+        // This mock implementation doesn't need to update anything
+        // Real implementations can use this to update oracles or internal state
     }
 }

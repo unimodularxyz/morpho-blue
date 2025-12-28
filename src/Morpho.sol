@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity 0.8.19;
+pragma solidity 0.8.28;
 
 import {
     Id,
@@ -18,7 +18,7 @@ import {
 import {ISwapRateModel} from "./interfaces/ISwapRateModel.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 
-import {ORACLE_PRICE_SCALE, MAX_FEE, DOMAIN_TYPEHASH, AUTHORIZATION_TYPEHASH} from "./libraries/ConstantsLib.sol";
+import {MAX_FEE, DOMAIN_TYPEHASH, AUTHORIZATION_TYPEHASH} from "./libraries/ConstantsLib.sol";
 import {UtilsLib} from "./libraries/UtilsLib.sol";
 import {EventsLib} from "./libraries/EventsLib.sol";
 import {ErrorsLib} from "./libraries/ErrorsLib.sol";
@@ -160,44 +160,50 @@ contract Morpho is IMorphoStaticTyping {
         require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
         require(onBehalf != address(0), ErrorsLib.ZERO_ADDRESS);
 
-        // Enforce proportional deposit based on current market ratio
-        if (market[id].totalSupplyAssetsA > 0 && market[id].totalSupplyAssetsB > 0) {
-            // Calculate how much of each asset should be supplied based on the ratio
-            uint256 requiredAssetsB = (assetsA * market[id].totalSupplyAssetsB) / market[id].totalSupplyAssetsA;
-            uint256 requiredAssetsA = (assetsB * market[id].totalSupplyAssetsA) / market[id].totalSupplyAssetsB;
-            
-            // Take the minimum to ensure we don't exceed what user provided
-            if (assetsB > requiredAssetsB) {
-                assetsB = requiredAssetsB;
-            } else if (assetsA > requiredAssetsA) {
-                assetsA = requiredAssetsA;
-            }
-        }
-
-        // Calculate shares based on total assets value
-        // For simplicity, we use assetsA + assetsB as the combined value
-        // In a real implementation, you'd want to price these properly
-        uint256 totalAssets = assetsA + assetsB;
-        uint256 totalMarketAssets = market[id].totalSupplyAssetsA + market[id].totalSupplyAssetsB;
-        
+        // Calculate shares based on the minimum ratio of assets supplied
         if (shares == 0) {
             if (market[id].totalSupplyShares == 0) {
-                shares = totalAssets;
+                // First deposit: calculate total value in terms of assetB
+                // price is assetA in terms of assetB (WAD scaled)
+                // totalValue = assetsB + (assetsA * price / WAD)
+                uint256 valueFromA = assetsA.wMulDown(marketParams.price);
+                shares = assetsB + valueFromA;
             } else {
-                shares = totalAssets.toSharesDown(totalMarketAssets, market[id].totalSupplyShares);
+                // Calculate the ratio of each asset being supplied relative to market reserves
+                uint256 ratioA = (assetsA * WAD) / market[id].totalSupplyAssetsA;
+                uint256 ratioB = (assetsB * WAD) / market[id].totalSupplyAssetsB;
+                
+                // Take the minimum ratio to ensure proportional deposit
+                uint256 minRatio = ratioA < ratioB ? ratioA : ratioB;
+                
+                // Adjust assets to match the minimum ratio (only supply what maintains proportion)
+                assetsA = (market[id].totalSupplyAssetsA * minRatio) / WAD;
+                assetsB = (market[id].totalSupplyAssetsB * minRatio) / WAD;
+                
+                // Calculate shares based on the minimum ratio
+                shares = (market[id].totalSupplyShares * minRatio) / WAD;
             }
         } else {
-            // If shares specified, calculate required assets
-            uint256 requiredAssets = shares.toAssetsUp(totalMarketAssets, market[id].totalSupplyShares);
-            require(totalAssets >= requiredAssets, ErrorsLib.INCONSISTENT_INPUT);
+            // If shares specified, calculate proportional assets required
+            assetsA = (shares * market[id].totalSupplyAssetsA) / market[id].totalSupplyShares;
+            assetsB = (shares * market[id].totalSupplyAssetsB) / market[id].totalSupplyShares;
         }
 
-        position[id][onBehalf].supplyShares += shares;
+        // Apply mint fee: reduce shares minted to user
+        uint256 feeShares = shares.wMulDown(market[id].fee);
+        uint256 userShares = shares - feeShares;
+
+        position[id][onBehalf].supplyShares += userShares;
         market[id].totalSupplyShares += shares.toUint128();
         market[id].totalSupplyAssetsA += assetsA.toUint128();
         market[id].totalSupplyAssetsB += assetsB.toUint128();
+        
+        // Allocate fee shares to fee recipient
+        if (feeShares > 0 && feeRecipient != address(0)) {
+            position[id][feeRecipient].supplyShares += feeShares;
+        }
 
-        emit EventsLib.Supply(id, msg.sender, onBehalf, assetsA, assetsB, shares);
+        emit EventsLib.Supply(id, msg.sender, onBehalf, assetsA, assetsB, userShares);
 
         if (data.length > 0) IMorphoSupplyCallback(msg.sender).onMorphoSupply(assetsA, assetsB, data);
 
@@ -224,17 +230,19 @@ contract Morpho is IMorphoStaticTyping {
 
         // If shares specified, calculate proportional assets
         if (shares > 0) {
-            uint256 totalMarketAssets = market[id].totalSupplyAssetsA + market[id].totalSupplyAssetsB;
-            uint256 totalAssets = shares.toAssetsDown(totalMarketAssets, market[id].totalSupplyShares);
-            
-            // Calculate proportional amounts
-            assetsA = (totalAssets * market[id].totalSupplyAssetsA) / totalMarketAssets;
-            assetsB = (totalAssets * market[id].totalSupplyAssetsB) / totalMarketAssets;
+            // Withdraw proportional amounts from each asset based on share percentage
+            assetsA = (shares * market[id].totalSupplyAssetsA) / market[id].totalSupplyShares;
+            assetsB = (shares * market[id].totalSupplyAssetsB) / market[id].totalSupplyShares;
         } else {
-            // Calculate shares from assets
-            uint256 totalAssets = assetsA + assetsB;
-            uint256 totalMarketAssets = market[id].totalSupplyAssetsA + market[id].totalSupplyAssetsB;
-            shares = totalAssets.toSharesUp(totalMarketAssets, market[id].totalSupplyShares);
+            // If assets specified, calculate shares needed for the withdrawal
+            // Use the maximum ratio to ensure we have enough shares
+            uint256 ratioA = market[id].totalSupplyAssetsA > 0 
+                ? (assetsA * market[id].totalSupplyShares) / market[id].totalSupplyAssetsA 
+                : 0;
+            uint256 ratioB = market[id].totalSupplyAssetsB > 0 
+                ? (assetsB * market[id].totalSupplyShares) / market[id].totalSupplyAssetsB 
+                : 0;
+            shares = ratioA > ratioB ? ratioA : ratioB;
         }
 
         position[id][onBehalf].supplyShares -= shares;
@@ -290,24 +298,22 @@ contract Morpho is IMorphoStaticTyping {
         }
         
         // Calculate output amount: amountOut = amountIn * swapRate / WAD
-        uint256 amountOutBeforeFee = amountIn.wMulDown(swapRate);
-        
-        // Apply swap fee: fee stays in the market, increasing reserves
-        uint256 feeAmount = amountOutBeforeFee.wMulDown(market[id].fee);
-        amountOut = amountOutBeforeFee - feeAmount;
+        // SwapRateModel includes fees in the rate calculation
+        amountOut = amountIn.wMulDown(swapRate);
         
         require(amountOut >= minAmountOut, ErrorsLib.SLIPPAGE_EXCEEDED);
-        require(amountOutBeforeFee <= market[id].totalSupplyAssetsB, ErrorsLib.INSUFFICIENT_LIQUIDITY);
+        require(amountOut <= market[id].totalSupplyAssetsB, ErrorsLib.INSUFFICIENT_LIQUIDITY);
 
-        // Update market balances - fee stays in assetB reserves
+        // Update market balances
         market[id].totalSupplyAssetsA += amountIn.toUint128();
         market[id].totalSupplyAssetsB -= amountOut.toUint128();
-        // Note: feeAmount stays in totalSupplyAssetsB, increasing reserves for suppliers
 
         // Check liquidity health after swap
-        if (!_isHealthy(marketParams, id)) {
-            emit EventsLib.LiquidityUnhealthy(id, market[id].totalSupplyAssetsA, market[id].totalSupplyAssetsB, marketParams.price);
-            revert(ErrorsLib.LIQUIDITY_UNHEALTHY);
+        if (marketParams.swapRateModel != address(0)) {
+            if (!ISwapRateModel(marketParams.swapRateModel).isHealthy(marketParams, market[id])) {
+                emit EventsLib.LiquidityUnhealthy(id, market[id].totalSupplyAssetsA, market[id].totalSupplyAssetsB, marketParams.price);
+                revert(ErrorsLib.LIQUIDITY_UNHEALTHY);
+            }
         }
 
         emit EventsLib.ExactSwapIn(id, msg.sender, receiver, amountIn, amountOut);
@@ -315,6 +321,12 @@ contract Morpho is IMorphoStaticTyping {
         // Transfer tokens
         IERC20(marketParams.assetA).safeTransferFrom(msg.sender, address(this), amountIn);
         IERC20(marketParams.assetB).safeTransfer(receiver, amountOut);
+
+        // Update price in swap rate model if available (non-critical, don't revert swap if it fails)
+        if (marketParams.swapRateModel != address(0)) {
+            try ISwapRateModel(marketParams.swapRateModel).updatePrice(marketParams, market[id], amountIn, amountOut, true) {}
+            catch {}
+        }
 
         return amountOut;
     }
@@ -341,25 +353,23 @@ contract Morpho is IMorphoStaticTyping {
             swapRate = marketParams.price;
         }
         
-        // Calculate input amount before fee: amountIn = amountOut * swapRate / WAD
-        uint256 amountInBeforeFee = amountOut.wMulDown(swapRate);
-        if (amountInBeforeFee * WAD < amountOut * swapRate) amountInBeforeFee += 1; // Round up
-        
-        // Apply swap fee: user pays extra, fee stays in the market
-        uint256 feeAmount = amountInBeforeFee.wMulDown(market[id].fee);
-        amountIn = amountInBeforeFee + feeAmount;
+        // Calculate input amount: amountIn = amountOut * swapRate / WAD
+        // SwapRateModel includes fees in the rate calculation
+        amountIn = amountOut.wMulDown(swapRate);
+        if (amountIn * WAD < amountOut * swapRate) amountIn += 1; // Round up
         
         require(amountIn <= maxAmountIn, ErrorsLib.SLIPPAGE_EXCEEDED);
 
-        // Update market balances - fee increases assetB reserves
+        // Update market balances
         market[id].totalSupplyAssetsB += amountIn.toUint128();
         market[id].totalSupplyAssetsA -= amountOut.toUint128();
-        // Note: feeAmount is included in amountIn, increasing reserves for suppliers
 
         // Check liquidity health after swap
-        if (!_isHealthy(marketParams, id)) {
-            emit EventsLib.LiquidityUnhealthy(id, market[id].totalSupplyAssetsA, market[id].totalSupplyAssetsB, marketParams.price);
-            revert(ErrorsLib.LIQUIDITY_UNHEALTHY);
+        if (marketParams.swapRateModel != address(0)) {
+            if (!ISwapRateModel(marketParams.swapRateModel).isHealthy(marketParams, market[id])) {
+                emit EventsLib.LiquidityUnhealthy(id, market[id].totalSupplyAssetsA, market[id].totalSupplyAssetsB, marketParams.price);
+                revert(ErrorsLib.LIQUIDITY_UNHEALTHY);
+            }
         }
 
         emit EventsLib.ExactSwapOut(id, msg.sender, receiver, amountIn, amountOut);
@@ -368,12 +378,13 @@ contract Morpho is IMorphoStaticTyping {
         IERC20(marketParams.assetB).safeTransferFrom(msg.sender, address(this), amountIn);
         IERC20(marketParams.assetA).safeTransfer(receiver, amountOut);
 
+        // Update price in swap rate model if available (non-critical, don't revert swap if it fails)
+        if (marketParams.swapRateModel != address(0)) {
+            try ISwapRateModel(marketParams.swapRateModel).updatePrice(marketParams, market[id], amountIn, amountOut, false) {}
+            catch {}
+        }
+
         return amountIn;
-    }
-
-    /*  IMorphoFlashLoanCallback(msg.sender).onMorphoFlashLoan(assets, data);
-
-        IERC20(token).safeTransferFrom(msg.sender, address(this), assets);
     }
 
     /* AUTHORIZATION */
@@ -413,35 +424,20 @@ contract Morpho is IMorphoStaticTyping {
         return msg.sender == onBehalf || isAuthorized[onBehalf][msg.sender];
     }
 
-    /* HEALTH CHECK */
-
-    /// @dev Returns whether the liquidity ratio in the given market is healthy.
-    /// @dev Checks if (assetB * price) / assetA is within [0.5, 2] range.
-    /// @dev Assumes that the inputs `marketParams` and `id` match.
-    function _isHealthy(MarketParams memory marketParams, Id id) internal view returns (bool) {
-        uint256 totalSupplyAssetsA = market[id].totalSupplyAssetsA;
-        uint256 totalSupplyAssetsB = market[id].totalSupplyAssetsB;
-        
-        // If either reserve is zero, consider unhealthy
-        if (totalSupplyAssetsA == 0 || totalSupplyAssetsB == 0) return false;
-        
-        // Calculate assetB * price (in WAD)
-        uint256 assetBValue = totalSupplyAssetsB.wMulDown(marketParams.price);
-        
-        // Check if 0.5 <= (assetB * price) / assetA <= 2
-        // Equivalent to: 0.5 * assetA <= assetB * price <= 2 * assetA
-        uint256 halfAssetA = totalSupplyAssetsA.wMulDown(WAD / 2); // 0.5 * WAD
-        uint256 doubleAssetA = totalSupplyAssetsA.wMulDown(2 * WAD); // 2 * WAD
-        
-        return assetBValue >= halfAssetA && assetBValue <= doubleAssetA;
-    }
-
     /* STORAGE VIEW */
 
     /// @inheritdoc IMorphoBase
-    function isLiqHealthy(MarketParams memory marketParams) external view returns (bool) {
+    function isHealthy(MarketParams memory marketParams) external view returns (bool) {
         Id id = marketParams.id();
-        return _isHealthy(marketParams, id);
+        require(market[id].lastUpdate != 0, ErrorsLib.MARKET_NOT_CREATED);
+        
+        // Delegate to swap rate model for health check
+        if (marketParams.swapRateModel != address(0)) {
+            return ISwapRateModel(marketParams.swapRateModel).isHealthy(marketParams, market[id]);
+        }
+        
+        // If no swap rate model, consider healthy by default
+        return true;
     }
 
     /// @inheritdoc IMorphoBase

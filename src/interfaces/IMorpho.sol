@@ -56,21 +56,15 @@ interface IMorphoBase {
     /// @notice The owner of the contract.
     /// @dev It has the power to change the owner.
     /// @dev It has the power to set fees on markets and set the fee recipient.
-    /// @dev It has the power to enable but not disable IRMs and LLTVs.
+    /// @dev It has the power to enable swap rate models.
     function owner() external view returns (address);
 
     /// @notice The fee recipient of all markets.
     /// @dev The recipient receives the fees of a given market through a supply position on that market.
     function feeRecipient() external view returns (address);
 
-    /// @notice Whether the `irm` is enabled.
-    function isIrmEnabled(address irm) external view returns (bool);
-
     /// @notice Whether the `swapRateModel` is enabled.
     function isSwapRateModelEnabled(address swapRateModel) external view returns (bool);
-
-    /// @notice Whether the `lltv` is enabled.
-    function isLltvEnabled(uint256 lltv) external view returns (bool);
 
     /// @notice Whether `authorized` is authorized to modify `authorizer`'s position on all markets.
     /// @dev Anyone is authorized to modify their own positions, regardless of this variable.
@@ -80,7 +74,7 @@ interface IMorphoBase {
     /// @dev Checks if (totalSupplyAssetsB * price) / totalSupplyAssetsA is within [0.5, 2] range.
     /// @param marketParams The market to check.
     /// @return True if the liquidity ratio is healthy, false otherwise.
-    function isLiqHealthy(MarketParams memory marketParams) external view returns (bool);
+    function isHealthy(MarketParams memory marketParams) external view returns (bool);
 
     /// @notice The `authorizer`'s current nonce. Used to prevent replay attacks with EIP-712 signatures.
     function nonce(address authorizer) external view returns (uint256);
@@ -90,13 +84,9 @@ interface IMorphoBase {
     /// @dev Warning: The owner can be set to the zero address.
     function setOwner(address newOwner) external;
 
-    /// @notice Enables `irm` as a possible IRM for market creation.
-    /// @dev Warning: It is not possible to disable an IRM.
-    function enableIrm(address irm) external;
-
-    /// @notice Enables `lltv` as a possible LLTV for market creation.
-    /// @dev Warning: It is not possible to disable a LLTV.
-    function enableLltv(uint256 lltv) external;
+    /// @notice Enables `swapRateModel` as a possible swap rate model for market creation.
+    /// @dev Warning: It is not possible to disable a swap rate model.
+    function enableSwapRateModel(address swapRateModel) external;
 
     /// @notice Sets the `newFee` for the given market `marketParams`.
     /// @param newFee The new fee, scaled by WAD.
@@ -110,7 +100,7 @@ interface IMorphoBase {
     function setFeeRecipient(address newFeeRecipient) external;
 
     /// @notice Creates the market `marketParams`.
-    /// @dev Here is the list of assumptions on the market's dependencies (tokens, IRM and oracle) that guarantees
+    /// @dev Here is the list of assumptions on the market's dependencies (tokens and swap rate model) that guarantees
     /// Morpho behaves as expected:
     /// - The token should be ERC-20 compliant, except that it can omit return values on `transfer` and `transferFrom`.
     /// - The token balance of Morpho should only decrease on `transfer` and `transferFrom`. In particular, tokens with
@@ -118,20 +108,14 @@ interface IMorphoBase {
     /// - The token should not re-enter Morpho on `transfer` nor `transferFrom`.
     /// - The token balance of the sender (resp. receiver) should decrease (resp. increase) by exactly the given amount
     /// on `transfer` and `transferFrom`. In particular, tokens with fees on transfer are not supported.
-    /// - The IRM should not re-enter Morpho.
-    /// - The oracle should return a price with the correct scaling.
-    /// - The oracle price should not be able to change instantly such that the new price is less than the old price
-    /// multiplied by LLTV*LIF. In particular, if the loan asset is a vault that can receive donations, the oracle
-    /// should not price its shares using the AUM.
+    /// - The swap rate model should not re-enter Morpho.
     /// @dev Here is a list of assumptions on the market's dependencies which, if broken, could break Morpho's liveness
     /// properties (funds could get stuck):
     /// - The token should not revert on `transfer` and `transferFrom` if balances and approvals are right.
-    /// - The amount of assets supplied and borrowed should not be too high (max ~1e32), otherwise the number of shares
+    /// - The amount of assets supplied should not be too high (max ~1e32), otherwise the number of shares
     /// might not fit within 128 bits.
-    /// - The oracle should not revert `price`.
-    /// - The oracle should not return a very high price (otherwise the computation of `maxBorrow` in `liquidity health checks` can overflow).
-    /// @dev The borrow share price of a market with less than 1e4 assets borrowed can be decreased by manipulations, to
-    /// the point where `totalBorrowShares` is very large and borrowing overflows.
+    /// @dev The supply share price of a market with less than 1e4 assets supplied can be decreased by manipulations, to
+    /// the point where `totalSupplyShares` is very large and supplying overflows.
     function createMarket(MarketParams memory marketParams) external;
 
     /// @notice Supplies `assetsA/assetsB` or `shares` on behalf of `onBehalf`, optionally calling back the caller's
@@ -281,7 +265,7 @@ interface IMorphoStaticTyping is IMorphoBase {
     function idToMarketParams(Id id)
         external
         view
-        returns (address assetA, address assetB, address collateralToken, address oracle, address irm, address swapRateModel, uint256 lltv, uint256 price);
+        returns (MarketParams memory);
 }
 
 /// @title IMorpho
